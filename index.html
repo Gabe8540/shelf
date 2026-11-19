@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shelf</title>
+<link rel="stylesheet" href="app.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Shelf">
+<meta name="theme-color" content="#0F151B">
+</head>
+<body class="web">
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span>Shelf</div>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button data-view="manga">Manga</button>
+    <button data-view="anime">Anime</button>
+    <button data-view="stats">Stats</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+  <button class="icon" id="bell"></button>
+  <div id="muteMenu" hidden></div>
+  <button class="icon" id="expand" title="Open the full page" aria-label="Open the full page">⤢</button>
+</header>
+<div class="wrap">
+  <div id="notice" hidden></div>
+  <section id="now" hidden aria-label="This page"></section>
+  <main id="main"></main>
+</div>
+<div id="toast" role="status" hidden></div>
+<dialog id="dlg">
+  <form id="addForm" method="dialog">
+    <h2>Add a series</h2>
+    <label>Title<input id="fTitle" required autocomplete="off"></label>
+    <div class="two">
+      <label>Type<select id="fKind"><option value="manga">Manga / manhwa</option><option value="anime">Anime</option></select></label>
+      <label>Progress<input id="fNum" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <label>Status<select id="fStatus"></select></label>
+    <div class="row end"><button type="button" class="btn ghost" id="fCancel">Cancel</button><button class="btn">Add</button></div>
+  </form>
+</dialog>
+<datalist id="titles"></datalist>
+<datalist id="sources"></datalist>
+<script src="shim.js"></script>
+<script>self.SHELF_VERSION = "1.8.2";</script>
+<script src="lib/core.js"></script>
+<script src="lib/gh.js"></script>
+<script src="background.js"></script>
+<script src="boot.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

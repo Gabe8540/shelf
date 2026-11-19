@@ -1,0 +1,14 @@
+{
+  "name": "Shelf",
+  "short_name": "Shelf",
+  "description": "My manga and anime list, synced through GitHub.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0F151B",
+  "theme_color": "#0F151B",
+  "icons": [
+    { "src": "icons/icon180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icons/icon512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

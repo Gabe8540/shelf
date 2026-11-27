@@ -66,7 +66,10 @@ async function ghSync() {
         const m = GH.merge(Array.from(c.entries.values()), remote.doc, loc.ghGone || {}, Date.now());
         ghApplying = true;
         try {
+          const was = m.put.map(function (n) { return c.entries.get(n.id); });
           await putMany(m.put);
+          // progress changed on another device or by the Crunchyroll connector: pass it on to MAL too
+          for (let i = 0; i < m.put.length; i++) if (was[i]) await malMark(m.put[i], was[i]);
           if (m.del.length) { m.del.forEach(function (id) { c.entries.delete(id); }); index = null; await chrome.storage.local.remove(m.del.map(function (id) { return 'e:' + id; })); }
           const rc = remote.doc && remote.doc.c, at = loc.ghCfgAt || 0;
           if (rc && rc.v && (rc.at || 0) >= at) { // settings: the device that changed them last wins

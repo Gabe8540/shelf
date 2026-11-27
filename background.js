@@ -1,6 +1,6 @@
 /* Shelf background worker: the single writer for the list. Decides what to do with a detected
    chapter/episode, applies updates, runs imports. */
-if (typeof importScripts === 'function') importScripts('lib/core.js', 'lib/gh.js'); // the web version loads these itself
+if (typeof importScripts === 'function') importScripts('lib/core.js', 'lib/gh.js', 'lib/cr.js'); // the web version loads these itself
 const WEB = !!self.SHELF_WEB;
 
 let cache = null, index = null; // index: exact-title lookup, rebuilt lazily after any change to the list
@@ -261,6 +261,89 @@ async function mergeItems(items, opts) {
   }
   await putMany(out);
   return { added: added, updated: updated, total: items.length };
+}
+
+/* ---------- Crunchyroll ---------- */
+// Crunchyroll's watch history comes in (read on crunchyroll.com, or from here), and Shelf's anime catch up:
+// progress only goes up, finished seasons are completed, new shows are added when MyAnimeList knows them.
+const CR_EVERY = 60 * 60000;
+let jikanAt = 0;
+async function jikanFind(titles) {
+  const wait = jikanAt + 1100 - Date.now();
+  if (wait > 0) await sleep(wait);
+  jikanAt = Date.now();
+  let list = [];
+  try {
+    const r = await fetch('https://api.jikan.moe/v4/anime?limit=8&q=' + encodeURIComponent(titles[0].slice(0, 100)), { credentials: 'omit', signal: AbortSignal.timeout(20000) });
+    if (r.ok) list = (await r.json()).data || [];
+  } catch (e) { return null; }
+  let best = null, bs = 0;
+  for (const a of list) {
+    const names = [a.title, a.title_english].concat((a.titles || []).map(function (t) { return t.title; }), a.title_synonyms || []).filter(Boolean);
+    for (const n of names) for (const t of titles) { const sc = TL.simNorm(TL.norm(n), TL.norm(t)); if (sc > bs) { bs = sc; best = a; } }
+  }
+  return bs >= 0.88 ? best : null;
+}
+const ymdOf = function (t) { const d = new Date(t || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+function crRaise(e, s, now) {
+  const have = Number(e.progress) || 0;
+  let to = s.watched;
+  if (e.total > 0 && to > e.total) to = e.total; // MAL splits some seasons differently
+  if (!(to > have)) return null;
+  const n = Object.assign({}, e, { progress: to, updatedAt: now, status: e.total && to >= e.total ? 'completed' : 'current', lastRead: ymdOf(s.lastPlayed) });
+  let log = (e.log || []).map(function (x) { return [x[0], x[1]]; });
+  const lastDay = log.length ? log[log.length - 1][0] : -Infinity;
+  for (const p of s.plays) { if (p[0] > have && p[1]) { const day = TL.dayNum(p[1]); if (day >= lastDay) log = TL.logRead(log, 1, day); } }
+  n.log = log;
+  if (s.lastEpisodeId) { n.lastUrl = 'https://www.crunchyroll.com/watch/' + s.lastEpisodeId; n.site = 'www.crunchyroll.com'; if (!n.source) n.source = 'Crunchyroll'; }
+  return n;
+}
+async function crApply(res) {
+  const seasons = (res && res.seasons || []).filter(function (s) { return s && s.watched > 0 && Array.isArray(s.titles) && s.titles.length; }).slice(0, 200);
+  const updated = [], added = [], unmatched = [];
+  // name matches first; MyAnimeList (Jikan) only for what is left, outside the queue
+  const c0 = await db(), anime0 = Array.from(c0.entries.values()).filter(function (e) { return e.kind === 'anime'; });
+  const ix = TL.makeIndex(anime0), plan = [];
+  for (const s of seasons) {
+    const m = TL.bestMatch(anime0, 'anime', s.titles, ix);
+    if (m && m.score >= 0.9) { plan.push({ s: s, id: m.entry.id }); continue; }
+    const a = await jikanFind(s.titles);
+    if (a) plan.push({ s: s, mal: a }); else unmatched.push(s.title);
+  }
+  await enqueue(async function () {
+    const c = await db(), now = Date.now(), puts = [], was = [];
+    for (const p of plan) {
+      let e = p.id ? c.entries.get(p.id) : null;
+      if (!e && p.mal) e = Array.from(c.entries.values()).find(function (x) { return x.kind === 'anime' && x.malId === p.mal.mal_id; });
+      if (e) {
+        const n = crRaise(e, p.s, now);
+        if (n) { puts.push(n); was.push(e); updated.push(n.title + ' ' + (e.progress || 0) + ' → ' + n.progress); }
+      } else if (p.mal) {
+        const a = p.mal, total = a.episodes || null, prog = total ? Math.min(p.s.watched, total) : p.s.watched;
+        const n = crRaise({ id: TL.newId('anime'), kind: 'anime', title: a.title_english || a.title, alt: [a.title, p.s.title].filter(function (t, i, l) { return t && l.indexOf(t) === i && t !== (a.title_english || a.title); }),
+          malId: a.mal_id, total: total, progress: 0, status: 'current', score: 0, origin: a.type || 'TV', image: (a.images && a.images.jpg && a.images.jpg.image_url) || null,
+          dur: a.duration ? parseInt(a.duration, 10) || null : null, links: { mal: 'https://myanimelist.net/anime/' + a.mal_id }, log: [], updatedAt: now }, Object.assign({}, p.s, { watched: prog }), now);
+        if (n) { puts.push(n); was.push(null); added.push(n.title + ' at ' + n.progress); }
+      }
+    }
+    await putMany(puts);
+    for (let i = 0; i < puts.length; i++) await malMark(puts[i], was[i]);
+    await saveSettings({ crState: { at: now, ok: true, updated: updated.slice(0, 30), added: added.slice(0, 30), unmatched: unmatched.slice(0, 30), read: res.read || 0, error: '' } });
+  });
+  return { updated: updated, added: added, unmatched: unmatched };
+}
+// Ask Crunchyroll from here. If Crunchyroll turns that away, open crunchyroll.com and the page does it instead.
+async function crRun() {
+  const c = await db(), st = c.settings.crState;
+  try {
+    const res = await CR.read('https://www.crunchyroll.com', { pages: st && st.ok ? 2 : 5, since: st && st.ok ? st.at - 3 * 864e5 : 0 });
+    return Object.assign({ ok: true }, await crApply(res));
+  } catch (e) {
+    if (e.auth) { await enqueue(function () { return saveSettings({ crState: Object.assign({}, st, { at: Date.now(), ok: false, error: 'Sign in to Crunchyroll in Chrome, then try again.' }) }); }); return { ok: false, error: 'Sign in to Crunchyroll in Chrome, then try again.' }; }
+    await chrome.storage.local.set({ crForce: Date.now() });
+    await chrome.tabs.create({ url: 'https://www.crunchyroll.com/history', active: true });
+    return { ok: true, opened: true };
+  }
 }
 
 async function malImport(user, kind) {
@@ -872,6 +955,17 @@ async function handle(msg, sender) {
       await saveSettings({ focus: Object.assign({}, c.settings.focus, { pass: Date.now() + 5 * 6e4 }) });
       return { ok: true };
     }
+    case 'crDue': { // a crunchyroll.com page asks whether it should read the history now
+      const c = await db(), st = c.settings.crState, f = (await chrome.storage.local.get('crForce')).crForce || 0;
+      if (c.settings.crAuto === false && !(Date.now() - f < 10 * 60000)) return { due: false };
+      const due = Date.now() - f < 10 * 60000 || !st || !st.ok || Date.now() - st.at > CR_EVERY;
+      return { due: due, since: st && st.ok ? st.at - 3 * 864e5 : 0, pages: st && st.ok ? 2 : 5 };
+    }
+    case 'crFailed': {
+      const c = await db();
+      await saveSettings({ crState: Object.assign({}, c.settings.crState, { at: Date.now(), ok: false, error: msg.auth ? 'Sign in to Crunchyroll, then open crunchyroll.com again.' : String(msg.error || 'Could not read Crunchyroll.').slice(0, 200) }) });
+      return { ok: true };
+    }
     case 'malDisconnect': await chrome.storage.local.remove(['malAuth', 'malQueue']); await saveSettings({ malState: null }); return { ok: true };
     case 'malSync': later(flushMal); return { ok: true };
     case 'mute': {
@@ -900,6 +994,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || !msg.type) return false;
   if (msg.type === 'ghConnect') { // talks to GitHub first, so it must not hold up the queue
     ghConnect(msg.repo, msg.token, msg.path).then(function (r) { sendResponse(Object.assign({ ok: true }, r)); }, function (e) { sendResponse({ ok: false, error: e.message }); });
+    return true;
+  }
+  if (msg.type === 'crRun') { // talks to Crunchyroll and MyAnimeList first, so it must not hold up the queue
+    crRun().then(sendResponse, function (e) { sendResponse({ ok: false, error: e.message }); });
+    return true;
+  }
+  if (msg.type === 'crImportNow') { // the same, with what a crunchyroll.com page read
+    chrome.storage.local.remove('crForce').then(function () { return crApply(msg.res); }).then(function (r) { sendResponse(Object.assign({ ok: true }, r)); }, function (e) { sendResponse({ ok: false, error: e.message }); });
     return true;
   }
     if (msg.type === 'malConnect') { // waits on a sign-in window, so it must not hold up the queue

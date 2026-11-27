@@ -457,6 +457,22 @@
       '<div class="row"><input class="inline" id="malClient" value="' + esc(m.clientId || '') + '" placeholder="MAL Client ID" aria-label="MAL Client ID" style="width:260px"><button class="btn" id="malConnect"' + (busy ? ' disabled' : '') + '>Connect</button></div>' +
       '<div class="msg' + (msgs.malw && msgs.malw.bad ? ' bad' : '') + '">' + esc(msgs.malw ? msgs.malw.text : '') + '</div>';
   }
+  function crHTML() {
+    const st = settings.crState;
+    let status = 'Not imported yet.';
+    if (st && st.error) status = st.error;
+    else if (st) {
+      const parts = [];
+      if (st.updated && st.updated.length) parts.push('updated ' + st.updated.join(', '));
+      if (st.added && st.added.length) parts.push('added ' + st.added.join(', '));
+      status = 'Last import ' + timeText(st.at) + ': ' + (parts.length ? parts.join('; ') : 'everything was already up to date') + '.' +
+        (st.unmatched && st.unmatched.length ? ' Not found on MyAnimeList, so not added: ' + st.unmatched.join(', ') + '.' : '');
+    }
+    return '<div class="card native"><h2>Crunchyroll</h2><p>Shelf reads what you have watched on Crunchyroll and catches your anime up: episodes only ever go up, finished seasons are marked completed, and shows you have not added yet are added from MyAnimeList. It uses your Crunchyroll sign-in in this browser, nothing to set up, and never changes anything on Crunchyroll.</p>' +
+      '<label><input type="checkbox" id="crAuto" class="inline" style="width:auto"' + (settings.crAuto !== false ? ' checked' : '') + '> Import by itself when I open crunchyroll.com (at most once an hour)</label>' +
+      '<div class="row" style="margin-top:8px"><button class="btn ghost" id="crRun"' + (busy ? ' disabled' : '') + '>Import now</button></div>' +
+      '<div class="msg' + (st && st.error ? ' bad' : '') + '">' + esc(status) + '</div></div>';
+  }
   function mutedHTML() {
     const sites = settings.mutedSites || [], n = all.filter(function (e) { return e.muted; }).length;
     if (!sites.length && !n) return '';
@@ -473,6 +489,8 @@
       '<div class="card native"><h2>MyAnimeList</h2><p>Pulls a public list into Shelf. Anything you have updated here more recently than on MAL is kept.</p>' +
       '<div class="row"><input class="inline" id="malUser" value="' + esc(settings.malUser || '') + '" placeholder="MAL username" aria-label="MAL username" style="width:180px">' +
       '<button class="btn" data-mal="anime"' + (busy ? ' disabled' : '') + '>Import anime</button><button class="btn ghost" data-mal="manga"' + (busy ? ' disabled' : '') + '>Import manga</button></div><div class="msg' + (msgs.mal && msgs.mal.bad ? ' bad' : '') + '" id="malMsg">' + esc(msgs.mal ? msgs.mal.text : '') + '</div>' + malWriteHTML() + '</div>' +
+
+      crHTML() +
 
       '<div class="card native"><h2>Auto-update</h2><p>On sites you track, Shelf saves the chapter or episode by itself after you have been on the page for a moment. Anywhere else it asks first.</p>' +
       '<label><input type="checkbox" id="auto" class="inline" style="width:auto"' + (settings.auto ? ' checked' : '') + '> Save automatically on tracked sites</label>' +
@@ -557,6 +575,15 @@
       await send({ type: 'ghDisconnect' }); msgs.gh = null; toast('Disconnected. Your list stays on this device and on GitHub.'); render();
     }
     else if (t.id === 'bmCopy') { try { await navigator.clipboard.writeText(bookmarklet()); toast('Copied'); } catch (e) { const b = $('#bmCode'); b.focus(); b.select(); toast('Select the code and copy it.'); } }
+    else if (t.id === 'crRun') {
+      busy = true; render(); toast('Reading your Crunchyroll history…');
+      const res = await send({ type: 'crRun' });
+      busy = false;
+      if (!res || !res.ok) toast((res && res.error) || 'Could not read Crunchyroll.');
+      else if (res.opened) toast('Opened Crunchyroll: Shelf imports from there in a few seconds');
+      else toast((res.updated.length + res.added.length) ? 'Crunchyroll: ' + res.updated.length + ' updated, ' + res.added.length + ' added' : 'Crunchyroll: already up to date');
+      render();
+    }
     else if (t.id === 'malSync') { await send({ type: 'malSync' }); toast('Sending to MyAnimeList'); }
     else if (t.id === 'malOff') { await send({ type: 'malDisconnect' }); toast('Disconnected from MyAnimeList'); }
     else if (t.id === 'quietAdd') await saveQuiet((settings.quiet || []).concat([{ days: [1, 2, 3, 4, 5], from: '08:00', to: '15:30' }]));
@@ -632,6 +659,7 @@
       await setFocus({ sites: (settings.focus.sites || []).filter(function (s) { return s !== h; }).concat([h]) });
     }
     else if (el.id === 'malManga') await send({ type: 'settings', patch: { mal: Object.assign({}, settings.mal, { manga: el.checked }) } });
+    else if (el.id === 'crAuto') { settings.crAuto = el.checked; await send({ type: 'settings', patch: { crAuto: el.checked } }); }
     else if (el.id === 'covers') { settings.covers = el.checked; await send({ type: 'settings', patch: { covers: el.checked } }); }
     else if (el.dataset.qf != null || el.dataset.qt != null) {
       const from = el.dataset.qf != null, idx = Number(from ? el.dataset.qf : el.dataset.qt);
